@@ -1,0 +1,14 @@
+{
+    "name": "iamosmanyilmaz/doctrine-datatable",
+    "description": "jQuery Datatable for Symfony Doctrine",
+    "type": "library",
+    "authors": [
+        {
+            "name": "osmanyilmaz",
+            "email": "info@astald.com"
+        }
+    ],
+    "require": {
+        "doctrine/orm": "^2.6"
+    }
+}
