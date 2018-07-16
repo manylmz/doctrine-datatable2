@@ -7,7 +7,7 @@ use Doctrine\ORM\QueryBuilder as ORMQueryBuilder;
 use Symfony\Component\HttpFoundation\Request;
 
 /**
- * Interface DataTablesInterface
+ * Interface DataTableInterface
  * @package AppBundle\Service\DataTables
  */
 interface DataTableInterface
