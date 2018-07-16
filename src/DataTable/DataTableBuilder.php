@@ -95,7 +95,7 @@ class DataTableBuilder implements DataTableInterface
         $queryBuilder = (clone $this->queryBuilder);
 
         $columns = &$this->request['columns'];
-        $columnCount = count($columns);
+        $columnCount = $columns !== null ? count($columns) : 0;
 
         // Search
         if (array_key_exists('search', $this->request)) {
@@ -132,7 +132,6 @@ class DataTableBuilder implements DataTableInterface
                 }
 
                 $operator = preg_match('~^\[(?<operator>[=!%<>]+)\].*$~', $value, $matches) ? $matches['operator'] : '=';
-
                 switch ($operator) {
                     case '!=': // Not equals; usage: [!=]search_term
                         $andX->add($queryBuilder->expr()->neq($column[$this->columnField], ":filter_{$i}"));
@@ -215,7 +214,7 @@ class DataTableBuilder implements DataTableInterface
     {
         return array(
             'data' => $this->getData(),
-            'draw' => $this->request['draw'],
+            'draw' => isset($this->request['draw']) ? $this->request['draw'] : '',
             'recordsFiltered' => $this->getRecordsFiltered(),
             'recordsTotal' => $this->getRecordsTotal(),
         );
