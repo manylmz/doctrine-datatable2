@@ -7,20 +7,20 @@ use Doctrine\ORM\QueryBuilder as ORMQueryBuilder;
 use Symfony\Component\HttpFoundation\Request;
 
 /**
- * Class DataTableBuilder
- * @package AppBundle\Service
+ * Class Builder
+ * @package AppBundle\Service\DataTables
  */
 class DataTableBuilder implements DataTableInterface
 {
     /**
-     * @var array
-     */
-    protected $columnAliases = array();
-
-    /**
      * @var string
      */
     protected $columnField = 'data';
+
+    /**
+     * @var array
+     */
+    protected $columnAliases = [];
 
     /**
      * @var string
@@ -28,21 +28,124 @@ class DataTableBuilder implements DataTableInterface
     protected $indexColumn = '*';
 
     /**
-     * @var QueryBuilder
+     * @var QueryBuilder|ORMQueryBuilder
      */
     protected $queryBuilder;
 
     /**
-     * @var array
+     * @var Request
      */
     protected $request;
 
     /**
+     * @var int
+     */
+    private $defaultLimit = 20;
+
+    /**
      * @return DataTableBuilder
      */
-    public static function factory()
+    public static function factory(): DataTableBuilder
     {
         return new self();
+    }
+
+    /**
+     * @return QueryBuilder|ORMQueryBuilder
+     */
+    public function getQueryBuilder()
+    {
+        return $this->queryBuilder;
+    }
+
+    /**
+     * @param QueryBuilder|ORMQueryBuilder $queryBuilder
+     * @return $this|mixed
+     */
+    public function setQueryBuilder($queryBuilder)
+    {
+        $this->queryBuilder = $queryBuilder;
+
+        return $this;
+    }
+
+    /**
+     * @return Request
+     */
+    public function getRequest() :Request
+    {
+        return $this->request;
+    }
+
+    /**
+     * @param Request $request
+     * @return $this|mixed
+     */
+    public function setRequest(Request &$request)
+    {
+        $this->request = $request;
+
+        return $this;
+    }
+
+    /**
+     * @return mixed|string
+     */
+    public function getIndexColumn()
+    {
+        return $this->indexColumn;
+    }
+
+    /**
+     * @param $indexColumn
+     * @param bool $clearName
+     * @return $this|mixed
+     */
+    public function setIndexColumn($indexColumn, $clearName = false)
+    {
+        $this->indexColumn = $clearName
+            ? $this->clearIndexColumnName($indexColumn)
+            : $indexColumn;
+
+        return $this;
+    }
+
+    /**
+     * @return mixed|string
+     */
+    public function getColumnField()
+    {
+        return $this->columnField;
+    }
+
+    /**
+     * @param $columnField
+     * @return $this|mixed
+     */
+    public function setColumnField($columnField)
+    {
+        $this->columnField = $columnField;
+
+        return $this;
+    }
+
+    /**
+     * @return array|mixed
+     */
+    public function getColumnAliases()
+    {
+        return $this->columnAliases;
+    }
+
+    /**
+     * @param $columnAliases
+     * @return $this|mixed
+     */
+    public function setColumnAliases($columnAliases)
+    {
+        $this->columnAliases = $columnAliases;
+
+        return $this;
     }
 
     /**
@@ -50,118 +153,112 @@ class DataTableBuilder implements DataTableInterface
      */
     public function getData()
     {
+        /** @var QueryBuilder|ORMQueryBuilder $queryBuilder */
         $queryBuilder = $this->getFilteredQuery();
-        $columns = &$this->request['columns'];
+        $columns = $this->getRequest()->get("columns");
 
-        // Order
-        if (array_key_exists('order', $this->request)) {
-            $order = &$this->request['order'];
-            foreach ($order as $sort) {
+        /** @var Request $order */
+        if ($order = $this->getRequest()->get("order") and isset($order)) {
+            foreach ($order as $key => $sort) {
                 $column = &$columns[intval($sort['column'])];
 
                 if (array_key_exists($column[$this->columnField], $this->columnAliases)) {
                     $column[$this->columnField] = $this->columnAliases[$column[$this->columnField]];
                 }
 
-                $queryBuilder->addOrderBy($column[$this->columnField], $sort['dir']);
+                // Attention Please!
+                // "SELECT COUNT(DISTINCT comment_count) as comment_count FROM table"
+                // instead of
+                // "SELECT COUNT(DISTINCT commentCount) as commentCount FROM table" -- so i love camelCase
+                $queryBuilder->addOrderBy(
+                    $this->converterUnderlineToDot($column[$this->columnField]),
+                    $sort['dir']
+                );
             }
         }
 
-        // Offset
-        if (array_key_exists('start', $this->request)) {
-            $queryBuilder->setFirstResult(intval($this->request['start']));
+        if ($start = intval($this->getRequest()->get("start")) and $start > 0) {
+            $queryBuilder->setFirstResult($start);
         }
 
-        // Limit
-        if (array_key_exists('length', $this->request)) {
-            $length = intval($this->request['length']);
-
-            if ($length > 0) {
-                $queryBuilder->setMaxResults($length);
-            }
+        if ($length = intval($this->getRequest()->get("length")) and $length > 0) {
+            $queryBuilder->setMaxResults($length);
+        } else {
+            $queryBuilder->setMaxResults($this->defaultLimit);
         }
 
-        // Fetch
         return $queryBuilder instanceof ORMQueryBuilder
-            ? $queryBuilder->getQuery()->getScalarResult()
+            ? $queryBuilder->getQuery()->getScalarResult() // getArrayResult
             : $queryBuilder->execute()->fetchAll();
     }
 
     /**
-     * @return QueryBuilder
+     * @return QueryBuilder|ORMQueryBuilder
      */
     public function getFilteredQuery()
     {
+        /** @var QueryBuilder|ORMQueryBuilder $queryBuilder */
         $queryBuilder = (clone $this->queryBuilder);
 
-        $columns = &$this->request['columns'];
-        $columnCount = $columns !== null ? count($columns) : 0;
+        $search  = $this->getRequest()->get('search');
+        $columns = $this->getRequest()->get('columns');
+        $dataColumns = $this->getRequest()->get('dataColumns');
+        $columnCount = $columns ? count($columns) : 0;
 
-        // Search
-        if (array_key_exists('search', $this->request)) {
-            if ($value = trim($this->request['search']['value'])) {
-                $orX = $queryBuilder->expr()->orX();
+        if (
+            $columns !== null and $dataColumns !== null and
+            $search !== null and $searchValue = trim($search['value'])
+        ) {
+            /** @var $dataColumns */
+            $dataColumns = json_decode($dataColumns, true);
+//            $orX = $queryBuilder->expr()->orX();
+//            for ($i = 0; $i < $columnCount; $i++) {
+//                $column = &$columns[$i];
+//                $dataColumn = &$dataColumns[$i];
+//
+//                if ($column['searchable'] == 'true') {
+//                    $orX->add($queryBuilder->expr()
+//                        ->like(
+//                            $this->findColumnType($dataColumn, $column[$this->columnField]),
+//                            ':search'
+//                        )
+//                    );
+//                }
+//            }
+//            if ($orX->count() >= 1) {
+//                $queryBuilder->andWhere($orX)->setParameter('search', "%{$value}%");
+//            }
 
-                for ($i = 0; $i < $columnCount; $i++) {
-                    $column = &$columns[$i];
+            for ($i = 0; $i < $columnCount; $i++) {
+                $column = &$columns[$i];
+                $dataColumn = &$dataColumns[$i];
 
-                    if ($column['searchable'] == 'true') {
-                        if (array_key_exists($column[$this->columnField], $this->columnAliases)) {
-                            $column[$this->columnField] = $this->columnAliases[$column[$this->columnField]];
-                        }
+                /** @var $andX */
+                $andX = $queryBuilder->expr()->andX();
 
-                        $orX->add($queryBuilder->expr()->like($column[$this->columnField], ':search'));
+                if (($column['searchable'] == 'true') and ($value = trim($column['search']['value']))) {
+                    // searches the relevant column
+                    if (array_key_exists($column[$this->columnField], $this->columnAliases)) {
+                        $column[$this->columnField] = $this->columnAliases[$column[$this->columnField]];
                     }
+
+                    $andX = $this->searchTerm($queryBuilder, $andX, $dataColumn, $column, $value, $i);
+
+                    $queryBuilder->setParameter("filter_{$i}", "LOWER({$value})");
+                } else if (($column['searchable'] == 'true') and strlen($searchValue) > 0) {
+                    // searches all columns
+                    $andX = $this->searchTerm($queryBuilder, $andX, $dataColumn, $column, $searchValue, $i);
+
+                    $queryBuilder->setParameter("filter_{$i}", "LOWER({$searchValue})");
                 }
 
-                if ($orX->count() >= 1) {
-                    $queryBuilder->andWhere($orX)
-                        ->setParameter('search', "%{$value}%");
+                if ($andX->count() >= 1) {
+                    $queryBuilder->andWhere($andX);
                 }
-            }
-        }
-
-        // Filter
-        for ($i = 0; $i < $columnCount; $i++) {
-            $column = &$columns[$i];
-            $andX = $queryBuilder->expr()->andX();
-
-            if (($column['searchable'] == 'true') && ($value = trim($column['search']['value']))) {
-                if (array_key_exists($column[$this->columnField], $this->columnAliases)) {
-                    $column[$this->columnField] = $this->columnAliases[$column[$this->columnField]];
-                }
-
-                $operator = preg_match('~^\[(?<operator>[=!%<>]+)\].*$~', $value, $matches) ? $matches['operator'] : '=';
-                switch ($operator) {
-                    case '!=': // Not equals; usage: [!=]search_term
-                        $andX->add($queryBuilder->expr()->neq($column[$this->columnField], ":filter_{$i}"));
-                        break;
-                    case '%': // Like; usage: [%]search_term
-                        $andX->add($queryBuilder->expr()->like($column[$this->columnField], ":filter_{$i}"));
-                        $value = "%{$value}%";
-                        break;
-                    case '<': // Less than; usage: [>]search_term
-                        $andX->add($queryBuilder->expr()->lt($column[$this->columnField], ":filter_{$i}"));
-                        break;
-                    case '>': // Greater than; usage: [<]search_term
-                        $andX->add($queryBuilder->expr()->gt($column[$this->columnField], ":filter_{$i}"));
-                        break;
-                    case '=': // Equals (default); usage: [=]search_term
-                    default:
-                        $andX->add($queryBuilder->expr()->eq($column[$this->columnField], ":filter_{$i}"));
-                        break;
-                }
-
-                $queryBuilder->setParameter("filter_{$i}", $value);
-            }
-
-            if ($andX->count() >= 1) {
-                $queryBuilder->andWhere($andX);
             }
         }
 
         return $queryBuilder;
-
     }
 
     /**
@@ -173,12 +270,12 @@ class DataTableBuilder implements DataTableInterface
         $query = $this->getFilteredQuery();
 
         if ($query instanceof ORMQueryBuilder) {
-            return $query->resetDQLParts(['select', 'groupBy'])
+            return $query->resetDQLParts(['select', 'groupBy', 'join'])
                 ->select("COUNT({$this->indexColumn})")
                 ->getQuery()
                 ->getSingleScalarResult();
         } else {
-            return $query->resetQueryParts(['select', 'groupBy'])
+            return $query->resetQueryParts(['select', 'groupBy', 'join'])
                 ->select("COUNT({$this->indexColumn})")
                 ->execute()
                 ->fetchColumn(0);
@@ -186,20 +283,20 @@ class DataTableBuilder implements DataTableInterface
     }
 
     /**
-     * @return bool|int|mixed|string
+     * @return int
      * @throws \Doctrine\ORM\NonUniqueResultException
      */
-    public function getRecordsTotal()
+    public function getRecordsTotal(): int
     {
-        $query = clone $this->queryBuilder;
+        $query = (clone $this->queryBuilder);
 
         if ($query instanceof ORMQueryBuilder) {
-            return $query->resetDQLParts(['select', 'groupBy'])
+            return $query->resetDQLParts(['select', 'groupBy', 'join'])
                 ->select("COUNT({$this->indexColumn})")
                 ->getQuery()
                 ->getSingleScalarResult();
         } else {
-            return $query->resetQueryParts(['select', 'groupBy'])
+            return $query->resetQueryParts(['select', 'groupBy', 'join'])
                 ->select("COUNT({$this->indexColumn})")
                 ->execute()
                 ->fetchColumn(0);
@@ -214,64 +311,97 @@ class DataTableBuilder implements DataTableInterface
     {
         return array(
             'data' => $this->getData(),
-            'draw' => isset($this->request['draw']) ? $this->request['draw'] : '',
+            'draw' => $this->getRequest()->get("draw"),
             'recordsFiltered' => $this->getRecordsFiltered(),
-            'recordsTotal' => $this->getRecordsTotal(),
+            'recordsTotal' => $this->getRecordsTotal()
         );
     }
 
     /**
-     * @param $indexColumn
-     * @return $this
-     */
-    public function withIndexColumn($indexColumn)
-    {
-        $this->indexColumn = $indexColumn;
-
-        return $this;
-    }
-
-    /**
-     * @param $columnAliases
-     * @return $this
-     */
-    public function withColumnAliases($columnAliases)
-    {
-        $this->columnAliases = $columnAliases;
-
-        return $this;
-    }
-
-    /**
-     * @param $columnField
-     * @return $this
-     */
-    public function withColumnField($columnField)
-    {
-        $this->columnField = $columnField;
-
-        return $this;
-    }
-
-    /**
      * @param QueryBuilder|ORMQueryBuilder $queryBuilder
-     * @return $this
+     * @param $andX
+     * @param $dataColumn
+     * @param $column
+     * @param $value
+     * @param $i
+     * @return QueryBuilder|ORMQueryBuilder
      */
-    public function withQueryBuilder($queryBuilder)
+    private function searchTerm($queryBuilder, $andX, $dataColumn, $column, $value, $i)
     {
-        $this->queryBuilder = $queryBuilder;
+        $operator = preg_match('~^\[(?<operator>[=!%<>]+)\].*$~', $value, $matches)
+            ? $matches['operator']
+            : '=';
 
-        return $this;
+        $castColumn = $this->findColumnType($dataColumn, $column[$this->columnField]);
+
+        switch ($operator) {
+            case '!=': // Not equals; usage: [!=]search_term
+                $andX->add($queryBuilder->expr()->neq($castColumn, ":filter_{$i}"));
+                break;
+            case '%': // Like; usage: [%]search_term
+                $andX->add($queryBuilder->expr()->like($castColumn, ":filter_{$i}"));
+                $value = "%{$value}%";
+                break;
+            case '<': // Less than; usage: [>]search_term
+                $andX->add($queryBuilder->expr()->lt($castColumn, ":filter_{$i}"));
+                break;
+            case '>': // Greater than; usage: [<]search_term
+                $andX->add($queryBuilder->expr()->gt($castColumn, ":filter_{$i}"));
+                break;
+            case '=': // Equals (default); usage: [=]search_term
+            default:
+                $andX->add($queryBuilder->expr()->eq($castColumn, ":filter_{$i}"));
+                break;
+        }
+
+        return $andX;
     }
 
     /**
-     * @param Request $request
-     * @return $this|mixed
+     * @param array $dataColumn
+     * @param string $columnName
+     * @return string
      */
-    public function withRequest(Request $request)
+    private function findColumnType(array &$dataColumn, string $columnName)
     {
-        $this->request = $request->query->all();
+        $columnName = $this->converterUnderlineToDot($columnName);
 
-        return $this;
+        if (isset($dataColumn)) {
+            switch ($dataColumn["columnType"]) {
+                case 'int':
+                case 'integer':
+                    $columnName = "CAST({$columnName} as int)";
+                    break;
+                case 'double':
+                    $columnName = "CAST({$columnName} as double)";
+                    break;
+                case 'datetime':
+                    $columnName = "DATE_FORMAT({$columnName}, '%Y-%m-%d')";
+                    break;
+                default:
+                    $columnName = "CAST(LOWER({$columnName}) as text)";
+                    break;
+            }
+        }
+
+        return $columnName;
+    }
+
+    /**
+     * @param string $string
+     * @return mixed
+     */
+    private function converterUnderlineToDot(string $string)
+    {
+        return str_replace("_", ".", $string);
+    }
+
+    /**
+     * @param string $name
+     * @return string
+     */
+    private function clearIndexColumnName(string $name)
+    {
+        return trim(strtolower(str_replace("AppBundle\\Entity\\", "", $name)));
     }
 }
