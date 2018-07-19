@@ -13,6 +13,11 @@ use Symfony\Component\HttpFoundation\Request;
 interface DataTableInterface
 {
     /**
+     * @return mixed
+     */
+    public static function factory(): DataTableBuilder;
+
+    /**
      * @return array
      */
     public function getData();
@@ -38,32 +43,58 @@ interface DataTableInterface
     public function getResponse();
 
     /**
-     * @param $indexColumn
-     * @return mixed
+     * @return Request
      */
-    public function withIndexColumn($indexColumn);
-
-    /**
-     * @param $columnAliases
-     * @return mixed
-     */
-    public function withColumnAliases($columnAliases);
-
-    /**
-     * @param $columnField
-     * @return mixed
-     */
-    public function withColumnField($columnField);
-
-    /**
-     * @param QueryBuilder|ORMQueryBuilder $queryBuilder
-     * @return mixed
-     */
-    public function withQueryBuilder($queryBuilder);
+    public function getRequest(): Request;
 
     /**
      * @param Request $request
      * @return mixed
      */
-    public function withRequest(Request $request);
+    public function setRequest(Request &$request);
+
+    /**
+     * @return QueryBuilder|ORMQueryBuilder
+     */
+    public function getQueryBuilder();
+
+    /**
+     * @param QueryBuilder|ORMQueryBuilder $queryBuilder
+     * @return mixed
+     */
+    public function setQueryBuilder($queryBuilder);
+
+    /**
+     * @return mixed
+     */
+    public function getIndexColumn();
+
+    /**
+     * @param $indexColumn
+     * @param bool $clearName
+     * @return mixed
+     */
+    public function setIndexColumn($indexColumn, $clearName = false);
+
+    /**
+     * @return mixed
+     */
+    public function getColumnField();
+
+    /**
+     * @param $columnField
+     * @return mixed
+     */
+    public function setColumnField($columnField);
+
+    /**
+     * @return mixed
+     */
+    public function getColumnAliases();
+
+    /**
+     * @param $columnAliases
+     * @return mixed
+     */
+    public function setColumnAliases($columnAliases);
 }
