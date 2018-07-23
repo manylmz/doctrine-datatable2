@@ -190,8 +190,6 @@ class DataTableBuilder implements DataTableInterface
 
     /**
      * @return QueryBuilder|ORMQueryBuilder
-     *
-     * En büyük sıkıntımız, arama be gülüm!
      */
     public function getFilteredQuery()
     {
@@ -223,7 +221,7 @@ class DataTableBuilder implements DataTableInterface
 
                     $operator = preg_match('~^\[(?<operator>[=!%<>]+)\].*$~', $searchText, $matches)
                         ? $matches['operator']
-                        : (strlen($nativeColumn["columnRegex"]) > 0 ? $nativeColumn["columnRegex"]  : '=');
+                        : (strlen($nativeColumn["columnRegex"]) > 0 ? $nativeColumn["columnRegex"] : '=');
 
                     $fetchColumn = $this->converterColumnType($nativeColumn, $column[$this->columnField], $searchText);
 
@@ -232,7 +230,13 @@ class DataTableBuilder implements DataTableInterface
                         if (is_numeric($searchText)) {
                             $andX->add($queryBuilder->expr()->eq($fetchColumn, intval($searchText)));
                         }
-                    } else if ($operator === '!=') {
+                    } elseif (in_array($nativeColumn['columnType'], ['date', 'datetime'])) {
+                        if (\DateTime::createFromFormat('Y-m-d', $searchText) !== false) {
+                            $andX->add($queryBuilder->expr()->eq("DATE_FORMAT({$fetchColumn}, '%Y-%m-%d')",  "'{$searchText}'"));
+                        } else {
+                            $andX->add($queryBuilder->expr()->like($fetchColumn, "LOWER('%{$searchText}%')"));
+                        }
+                    } elseif ($operator === '!=') {
                         // Not equals; usage: [!=]search_term
                         $andX->add($queryBuilder->expr()->neq($fetchColumn, $searchText));
                     } elseif ($operator === '%') {
@@ -351,7 +355,7 @@ class DataTableBuilder implements DataTableInterface
                     }
                     break;
                 default:
-                    $columnName = ! is_numeric($columnName) ? "LOWER({$columnName})" : $columnName;
+                    $columnName = !is_numeric($columnName) ? "LOWER({$columnName})" : $columnName;
                     $columnName = "CAST({$columnName} as text)";
                     break;
             }
