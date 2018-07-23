@@ -2,6 +2,7 @@
 
 namespace AppBundle\Service\DataTables;
 
+use AppBundle\Entity\Product;
 use Doctrine\DBAL\Query\QueryBuilder;
 use Doctrine\ORM\QueryBuilder as ORMQueryBuilder;
 use Symfony\Component\HttpFoundation\Request;
@@ -72,7 +73,7 @@ class DataTableBuilder implements DataTableInterface
     /**
      * @return Request
      */
-    public function getRequest() :Request
+    public function getRequest(): Request
     {
         return $this->request;
     }
@@ -161,17 +162,12 @@ class DataTableBuilder implements DataTableInterface
         if ($order = $this->getRequest()->get("order") and isset($order)) {
             foreach ($order as $key => $sort) {
                 $column = &$columns[intval($sort['column'])];
-
-                if (array_key_exists($column[$this->columnField], $this->columnAliases)) {
-                    $column[$this->columnField] = $this->columnAliases[$column[$this->columnField]];
-                }
-
                 // Attention Please!
                 // "SELECT COUNT(DISTINCT comment_count) as comment_count FROM table"
                 // instead of
                 // "SELECT COUNT(DISTINCT commentCount) as commentCount FROM table" -- so i love camelCase
                 $queryBuilder->addOrderBy(
-                    $this->converterUnderlineToDot($column[$this->columnField]),
+                    $this->converterBottomLine($column[$this->columnField]),
                     $sort['dir']
                 );
             }
@@ -188,22 +184,23 @@ class DataTableBuilder implements DataTableInterface
         }
 
         return $queryBuilder instanceof ORMQueryBuilder
-            ? $queryBuilder->getQuery()->getScalarResult() // getArrayResult
+            ? $queryBuilder->getQuery()->getScalarResult()
             : $queryBuilder->execute()->fetchAll();
     }
 
     /**
      * @return QueryBuilder|ORMQueryBuilder
+     *
+     * En büyük sıkıntımız, arama be gülüm!
      */
     public function getFilteredQuery()
     {
         /** @var QueryBuilder|ORMQueryBuilder $queryBuilder */
         $queryBuilder = (clone $this->queryBuilder);
 
-        $search  = $this->getRequest()->get('search');
+        $search = $this->getRequest()->get('search');
         $columns = $this->getRequest()->get('columns');
         $dataColumns = $this->getRequest()->get('dataColumns');
-        $columnCount = $columns ? count($columns) : 0;
 
         if (
             $columns !== null and $dataColumns !== null and
@@ -211,50 +208,52 @@ class DataTableBuilder implements DataTableInterface
         ) {
             /** @var $dataColumns */
             $dataColumns = json_decode($dataColumns, true);
-//            $orX = $queryBuilder->expr()->orX();
-//            for ($i = 0; $i < $columnCount; $i++) {
-//                $column = &$columns[$i];
-//                $dataColumn = &$dataColumns[$i];
-//
-//                if ($column['searchable'] == 'true') {
-//                    $orX->add($queryBuilder->expr()
-//                        ->like(
-//                            $this->findColumnType($dataColumn, $column[$this->columnField]),
-//                            ':search'
-//                        )
-//                    );
-//                }
-//            }
-//            if ($orX->count() >= 1) {
-//                $queryBuilder->andWhere($orX)->setParameter('search', "%{$value}%");
-//            }
 
-            for ($i = 0; $i < $columnCount; $i++) {
-                $column = &$columns[$i];
-                $dataColumn = &$dataColumns[$i];
-
+            foreach ($columns as $key => $column) {
                 /** @var $andX */
                 $andX = $queryBuilder->expr()->andX();
+                $nativeColumn = &$dataColumns[$key];
 
-                if (($column['searchable'] == 'true') and ($value = trim($column['search']['value']))) {
-                    // searches the relevant column
-                    if (array_key_exists($column[$this->columnField], $this->columnAliases)) {
-                        $column[$this->columnField] = $this->columnAliases[$column[$this->columnField]];
+                if (
+                    ($column['searchable'] == 'true') and
+                    (trim($column['search']['value']) || strlen(trim($searchValue)) > 0)
+                ) {
+                    $searchText = (strlen($searchValue) > 0) ? $searchValue : trim($column['search']['value']);
+                    $searchText = str_replace("%", "", $searchText);
+
+                    $operator = preg_match('~^\[(?<operator>[=!%<>]+)\].*$~', $searchText, $matches)
+                        ? $matches['operator']
+                        : (strlen($nativeColumn["columnRegex"]) > 0 ? $nativeColumn["columnRegex"]  : '=');
+
+                    $fetchColumn = $this->converterColumnType($nativeColumn, $column[$this->columnField], $searchText);
+
+                    if (in_array($nativeColumn['columnType'], ['int', 'integer'])) {
+                        // Equals (default); usage: [=]search_term, there is for just integer column
+                        if (is_numeric($searchText)) {
+                            $andX->add($queryBuilder->expr()->eq($fetchColumn, intval($searchText)));
+                        }
+                    } else if ($operator === '!=') {
+                        // Not equals; usage: [!=]search_term
+                        $andX->add($queryBuilder->expr()->neq($fetchColumn, $searchText));
+                    } elseif ($operator === '%') {
+                        // Like; usage: [%]search_term
+                        $andX->add($queryBuilder->expr()->like($fetchColumn, "LOWER('%{$searchText}%')"));
+                    } elseif ($operator === '<') {
+                        // Less than; usage: [>]search_term
+                        $andX->add($queryBuilder->expr()->lt($fetchColumn, $searchText));
+                    } elseif ($operator === '>') {
+                        // Greater than; usage: [<]search_term
+                        $andX->add($queryBuilder->expr()->gt($fetchColumn, $searchText));
+                    } else {
+                        // Equals (default); usage: [=]search_term
+                        $andX->add($queryBuilder->expr()->eq($fetchColumn, "'{$searchText}'"));
                     }
-
-                    $andX = $this->searchTerm($queryBuilder, $andX, $dataColumn, $column, $value, $i);
-
-                    $queryBuilder->setParameter("filter_{$i}", "LOWER({$value})");
-                } else if (($column['searchable'] == 'true') and strlen($searchValue) > 0) {
-                    // searches all columns
-                    $andX = $this->searchTerm($queryBuilder, $andX, $dataColumn, $column, $searchValue, $i);
-
-                    $queryBuilder->setParameter("filter_{$i}", "LOWER({$searchValue})");
                 }
 
-                if ($andX->count() >= 1) {
-                    $queryBuilder->andWhere($andX);
-                }
+                $queryBuilder->orWhere($andX);
+//                if ($andX->count() >= 1) {
+//                    $queryBuilder->andWhere($andX);
+//                }
             }
         }
 
@@ -267,16 +266,16 @@ class DataTableBuilder implements DataTableInterface
      */
     public function getRecordsFiltered()
     {
-        $query = $this->getFilteredQuery();
+        $query = clone $this->getFilteredQuery();
 
         if ($query instanceof ORMQueryBuilder) {
-            return $query->resetDQLParts(['select', 'groupBy', 'join'])
-                ->select("COUNT({$this->indexColumn})")
+            return $query->resetDQLParts(['select', 'groupBy'])
+                ->select("COUNT(DISTINCT {$this->indexColumn})")
                 ->getQuery()
                 ->getSingleScalarResult();
         } else {
-            return $query->resetQueryParts(['select', 'groupBy', 'join'])
-                ->select("COUNT({$this->indexColumn})")
+            return $query->resetQueryParts(['select', 'groupBy'])
+                ->select("COUNT(DISTINCT {$this->indexColumn})")
                 ->execute()
                 ->fetchColumn(0);
         }
@@ -291,13 +290,13 @@ class DataTableBuilder implements DataTableInterface
         $query = (clone $this->queryBuilder);
 
         if ($query instanceof ORMQueryBuilder) {
-            return $query->resetDQLParts(['select', 'groupBy', 'join'])
-                ->select("COUNT({$this->indexColumn})")
+            return $query->resetDQLParts(['select', 'groupBy'])
+                ->select("COUNT(DISTINCT {$this->indexColumn})")
                 ->getQuery()
                 ->getSingleScalarResult();
         } else {
-            return $query->resetQueryParts(['select', 'groupBy', 'join'])
-                ->select("COUNT({$this->indexColumn})")
+            return $query->resetQueryParts(['select', 'groupBy'])
+                ->select("COUNT(DISTINCT {$this->indexColumn})")
                 ->execute()
                 ->fetchColumn(0);
         }
@@ -318,68 +317,42 @@ class DataTableBuilder implements DataTableInterface
     }
 
     /**
-     * @param QueryBuilder|ORMQueryBuilder $queryBuilder
-     * @param $andX
-     * @param $dataColumn
-     * @param $column
-     * @param $value
-     * @param $i
-     * @return QueryBuilder|ORMQueryBuilder
-     */
-    private function searchTerm($queryBuilder, $andX, $dataColumn, $column, $value, $i)
-    {
-        $operator = preg_match('~^\[(?<operator>[=!%<>]+)\].*$~', $value, $matches)
-            ? $matches['operator']
-            : '=';
-
-        $castColumn = $this->findColumnType($dataColumn, $column[$this->columnField]);
-
-        switch ($operator) {
-            case '!=': // Not equals; usage: [!=]search_term
-                $andX->add($queryBuilder->expr()->neq($castColumn, ":filter_{$i}"));
-                break;
-            case '%': // Like; usage: [%]search_term
-                $andX->add($queryBuilder->expr()->like($castColumn, ":filter_{$i}"));
-                $value = "%{$value}%";
-                break;
-            case '<': // Less than; usage: [>]search_term
-                $andX->add($queryBuilder->expr()->lt($castColumn, ":filter_{$i}"));
-                break;
-            case '>': // Greater than; usage: [<]search_term
-                $andX->add($queryBuilder->expr()->gt($castColumn, ":filter_{$i}"));
-                break;
-            case '=': // Equals (default); usage: [=]search_term
-            default:
-                $andX->add($queryBuilder->expr()->eq($castColumn, ":filter_{$i}"));
-                break;
-        }
-
-        return $andX;
-    }
-
-    /**
-     * @param array $dataColumn
+     * @param array $column
      * @param string $columnName
-     * @return string
+     * @param string $value
+     * @return mixed|string
      */
-    private function findColumnType(array &$dataColumn, string $columnName)
+    private function converterColumnType(array &$column, string $columnName, string $value)
     {
-        $columnName = $this->converterUnderlineToDot($columnName);
+        $columnName = $this->converterBottomLine($columnName);
 
-        if (isset($dataColumn)) {
-            switch ($dataColumn["columnType"]) {
+        if (!empty($column)) {
+            switch ($column["columnType"]) {
                 case 'int':
                 case 'integer':
                     $columnName = "CAST({$columnName} as int)";
                     break;
+                case 'float':
+                    $columnName = "CAST({$columnName} as float)";
+                    break;
                 case 'double':
                     $columnName = "CAST({$columnName} as double)";
                     break;
+                case 'bool':
+                case 'boolean':
+                    $isTrue = $value === Product::ACTIVE ? "TRUE" : "FALSE";
+                    $columnName = "COALESCE({$columnName}, FALSE) = {$isTrue}";
+                    break;
                 case 'datetime':
-                    $columnName = "DATE_FORMAT({$columnName}, '%Y-%m-%d')";
+                    if (!\DateTime::createFromFormat('Y-m-d', $value)) {
+                        $columnName = "DATE_FORMAT({$columnName}, '%Y-%m-%d')";
+                    } else {
+                        continue;
+                    }
                     break;
                 default:
-                    $columnName = "CAST(LOWER({$columnName}) as text)";
+                    $columnName = ! is_numeric($columnName) ? "LOWER({$columnName})" : $columnName;
+                    $columnName = "CAST({$columnName} as text)";
                     break;
             }
         }
@@ -391,7 +364,7 @@ class DataTableBuilder implements DataTableInterface
      * @param string $string
      * @return mixed
      */
-    private function converterUnderlineToDot(string $string)
+    private function converterBottomLine(string $string)
     {
         return str_replace("_", ".", $string);
     }
