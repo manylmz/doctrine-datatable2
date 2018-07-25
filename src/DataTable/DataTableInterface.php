@@ -7,16 +7,11 @@ use Doctrine\ORM\QueryBuilder as ORMQueryBuilder;
 use Symfony\Component\HttpFoundation\Request;
 
 /**
- * Interface DataTableInterface
  * @package AppBundle\Service\DataTables
+ * @author Osman Yılmaz <osman@hayalmahsulleri.com.tr>
  */
 interface DataTableInterface
 {
-    /**
-     * @return mixed
-     */
-    public static function factory(): DataTableBuilder;
-
     /**
      * @return array
      */
@@ -97,4 +92,26 @@ interface DataTableInterface
      * @return mixed
      */
     public function setColumnAliases($columnAliases);
+
+    /**
+     * @return array
+     */
+    public function getAdditionalData(): array;
+
+    /**
+     * @param array $additionalData
+     * @return mixed
+     */
+    public function setAdditionalData(array $additionalData);
+
+    /**
+     * @return mixed
+     */
+    public function getRedisData();
+
+    /**
+     * @param mixed ...$redisData
+     * @return $this
+     */
+    public function setRedisData(...$redisData);
 }
