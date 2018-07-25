@@ -3,13 +3,17 @@
 namespace AppBundle\Service\DataTables;
 
 use AppBundle\Entity\Product;
+use AppBundle\Service\PredisService;
 use Doctrine\DBAL\Query\QueryBuilder;
+use Doctrine\ORM\Query\Expr\Andx;
+use Doctrine\ORM\Query\Expr\Orx;
 use Doctrine\ORM\QueryBuilder as ORMQueryBuilder;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Class Builder
  * @package AppBundle\Service\DataTables
+ * @author Osman Yılmaz <osman@hayalmahsulleri.com.tr>
  */
 class DataTableBuilder implements DataTableInterface
 {
@@ -44,12 +48,19 @@ class DataTableBuilder implements DataTableInterface
     private $defaultLimit = 20;
 
     /**
-     * @return DataTableBuilder
+     * @var array
      */
-    public static function factory(): DataTableBuilder
-    {
-        return new self();
-    }
+    private $additionalData = [];
+
+    /**
+     * @var
+     */
+    private $redisData = [];
+
+    /**
+     * @var PredisService
+     */
+    private $redisService;
 
     /**
      * @return QueryBuilder|ORMQueryBuilder
@@ -152,6 +163,61 @@ class DataTableBuilder implements DataTableInterface
     /**
      * @return array
      */
+    public function getAdditionalData(): array
+    {
+        return $this->additionalData;
+    }
+
+    /**
+     * @param array $additionalData
+     * @return $this
+     */
+    public function setAdditionalData(array $additionalData)
+    {
+        $this->additionalData = $additionalData;
+
+        return $this;
+    }
+
+    /**
+     * @return mixed
+     */
+    public function getRedisData()
+    {
+        return $this->redisData;
+    }
+
+    /**
+     * @param mixed ...$redisData
+     * @return $this
+     */
+    public function setRedisData(...$redisData)
+    {
+        $this->redisData = $redisData;
+
+        return $this;
+    }
+
+    /**
+     * @return PredisService
+     */
+    public function getRedisService()
+    {
+        return $this->redisService;
+    }
+
+    /**
+     * @param PredisService $redisService
+     */
+    public function setRedisService(PredisService $redisService)
+    {
+        $this->redisService = $redisService;
+    }
+
+    /**
+     * @return array
+     * @throws \Exception
+     */
     public function getData()
     {
         /** @var QueryBuilder|ORMQueryBuilder $queryBuilder */
@@ -183,6 +249,7 @@ class DataTableBuilder implements DataTableInterface
             $queryBuilder->setMaxResults($this->defaultLimit);
         }
 
+        // if you have a query problem, yeah man pls -.-  dump SQL
         return $queryBuilder instanceof ORMQueryBuilder
             ? $queryBuilder->getQuery()->getScalarResult()
             : $queryBuilder->execute()->fetchAll();
@@ -190,14 +257,17 @@ class DataTableBuilder implements DataTableInterface
 
     /**
      * @return QueryBuilder|ORMQueryBuilder
+     * @throws \Exception
      */
     public function getFilteredQuery()
     {
         /** @var QueryBuilder|ORMQueryBuilder $queryBuilder */
         $queryBuilder = (clone $this->queryBuilder);
-
+        /** @var $search */
         $search = $this->getRequest()->get('search');
+        /** @var $columns */
         $columns = $this->getRequest()->get('columns');
+        /** @var $dataColumns */
         $dataColumns = $this->getRequest()->get('dataColumns');
 
         if (
@@ -207,58 +277,72 @@ class DataTableBuilder implements DataTableInterface
             /** @var $dataColumns */
             $dataColumns = json_decode($dataColumns, true);
 
+            /** @var $orX */
+            $orX = $queryBuilder->expr()->orX();
+
             foreach ($columns as $key => $column) {
-                /** @var $andX */
-                $andX = $queryBuilder->expr()->andX();
+                /** @var $nativeColumn */
                 $nativeColumn = &$dataColumns[$key];
 
                 if (
                     ($column['searchable'] == 'true') and
                     (trim($column['search']['value']) || strlen(trim($searchValue)) > 0)
                 ) {
-                    $searchText = (strlen($searchValue) > 0) ? $searchValue : trim($column['search']['value']);
-                    $searchText = str_replace("%", "", $searchText);
+                    $searchText  = (strlen($searchValue) > 0) ? $searchValue : trim($column['search']['value']);
+                    $searchText  = str_replace(["%", "'", '"'], ["", "''", '""'], $searchText);
+                    $columnType  = isset($nativeColumn['columnType']) ? $nativeColumn['columnType'] : null;
+                    $columnRegex = isset($nativeColumn["columnRegex"]) ? $nativeColumn["columnRegex"] : "=";
 
+                    /** @var $operator */
                     $operator = preg_match('~^\[(?<operator>[=!%<>]+)\].*$~', $searchText, $matches)
                         ? $matches['operator']
-                        : (strlen($nativeColumn["columnRegex"]) > 0 ? $nativeColumn["columnRegex"] : '=');
+                        : (strlen($columnRegex) > 0 ? $columnRegex : '=');
 
-                    $fetchColumn = $this->converterColumnType($nativeColumn, $column[$this->columnField], $searchText);
+                    /** @var $fetchColumn */
+                    $fetchColumn = $this->converterColumnType(
+                        $nativeColumn,
+                        $column[$this->columnField],
+                        $searchText
+                    );
 
-                    if (in_array($nativeColumn['columnType'], ['int', 'integer'])) {
+                    if (in_array($columnType, ['int', 'integer'])) {
                         // Equals (default); usage: [=]search_term, there is for just integer column
                         if (is_numeric($searchText)) {
-                            $andX->add($queryBuilder->expr()->eq($fetchColumn, intval($searchText)));
+                            $orX->add($queryBuilder->expr()->eq($fetchColumn, intval($searchText)));
                         }
-                    } elseif (in_array($nativeColumn['columnType'], ['date', 'datetime'])) {
+                    } elseif (in_array($columnType, ['date', 'datetime'])) {
                         if (\DateTime::createFromFormat('Y-m-d', $searchText) !== false) {
-                            $andX->add($queryBuilder->expr()->eq("DATE_FORMAT({$fetchColumn}, '%Y-%m-%d')",  "'{$searchText}'"));
+                            $orX->add($queryBuilder
+                                ->expr()
+                                ->eq("DATE_FORMAT({$fetchColumn}, '%Y-%m-%d')", "'{$searchText}'")
+                            );
                         } else {
-                            $andX->add($queryBuilder->expr()->like($fetchColumn, "LOWER('%{$searchText}%')"));
+                            $orX->add($queryBuilder->expr()->like($fetchColumn, "LOWER('%{$searchText}%')"));
+                        }
+                    } elseif ($columnType === 'price') {
+                        if (is_numeric($searchText)) {
+                            $orX->add($queryBuilder->expr()->eq($fetchColumn, intval($searchText)));
                         }
                     } elseif ($operator === '!=') {
                         // Not equals; usage: [!=]search_term
-                        $andX->add($queryBuilder->expr()->neq($fetchColumn, $searchText));
+                        $orX->add($queryBuilder->expr()->neq($fetchColumn, $searchText));
                     } elseif ($operator === '%') {
                         // Like; usage: [%]search_term
-                        $andX->add($queryBuilder->expr()->like($fetchColumn, "LOWER('%{$searchText}%')"));
+                        $orX->add($queryBuilder->expr()->like($fetchColumn, "LOWER('%{$searchText}%')"));
                     } elseif ($operator === '<') {
                         // Less than; usage: [>]search_term
-                        $andX->add($queryBuilder->expr()->lt($fetchColumn, $searchText));
+                        $orX->add($queryBuilder->expr()->lt($fetchColumn, $searchText));
                     } elseif ($operator === '>') {
                         // Greater than; usage: [<]search_term
-                        $andX->add($queryBuilder->expr()->gt($fetchColumn, $searchText));
+                        $orX->add($queryBuilder->expr()->gt($fetchColumn, $searchText));
                     } else {
                         // Equals (default); usage: [=]search_term
-                        $andX->add($queryBuilder->expr()->eq($fetchColumn, "'{$searchText}'"));
+                        $orX->add($queryBuilder->expr()->eq($fetchColumn, "'{$searchText}'"));
                     }
                 }
-
-                $queryBuilder->orWhere($andX);
-//                if ($andX->count() >= 1) {
-//                    $queryBuilder->andWhere($andX);
-//                }
             }
+
+            $queryBuilder->andWhere($orX);
         }
 
         return $queryBuilder;
@@ -266,7 +350,7 @@ class DataTableBuilder implements DataTableInterface
 
     /**
      * @return bool|mixed|string
-     * @throws \Doctrine\ORM\NonUniqueResultException
+     * @throws \Doctrine\ORM\NonUniqueResultException|\Exception
      */
     public function getRecordsFiltered()
     {
@@ -308,16 +392,54 @@ class DataTableBuilder implements DataTableInterface
 
     /**
      * @return array
-     * @throws \Doctrine\ORM\NonUniqueResultException
+     * @throws \Doctrine\ORM\NonUniqueResultException|\Exception
      */
     public function getResponse()
     {
-        return array(
+        $data = array(
             'data' => $this->getData(),
             'draw' => $this->getRequest()->get("draw"),
             'recordsFiltered' => $this->getRecordsFiltered(),
             'recordsTotal' => $this->getRecordsTotal()
         );
+
+        if (!empty($this->getAdditionalData()) and sizeof($this->getAdditionalData()) > 0) {
+            $data = array_merge(['additional' => $this->getAdditionalData()], $data);
+        }
+
+        if (!empty($this->getRedisData()) and sizeof($this->getRedisData()) > 0) {
+            $data = array_merge(['redis' => $this->fetchAllRedisData()], $data);
+        }
+
+        return $data;
+    }
+
+    /**
+     * @return Response
+     * @throws \Doctrine\ORM\NonUniqueResultException
+     */
+    public function getJsonResponse()
+    {
+        return new Response(json_encode($this->getResponse()));
+    }
+
+    /**
+     * @return array
+     * @throws \Exception
+     */
+    private function fetchAllRedisData()
+    {
+        $redisData = [];
+        $redisService = $this->getRedisService();
+        $data = $this->getRedisData();
+
+        foreach ($data as $key => $value) {
+            if ($this->getRedisService()->exists($value)) {
+                $redisData[$value] = (clone $redisService)->hGetAll($value);
+            }
+        }
+
+        return $redisData;
     }
 
     /**
@@ -330,17 +452,18 @@ class DataTableBuilder implements DataTableInterface
     {
         $columnName = $this->converterBottomLine($columnName);
 
-        if (!empty($column)) {
+        if (!empty($column) and isset($column["columnType"])) {
             switch ($column["columnType"]) {
                 case 'int':
                 case 'integer':
-                    $columnName = "CAST({$columnName} as int)";
+                    $columnName = "CAST({$columnName} as INTEGER)";
                     break;
                 case 'float':
-                    $columnName = "CAST({$columnName} as float)";
-                    break;
                 case 'double':
-                    $columnName = "CAST({$columnName} as double)";
+                    $columnName = "CAST({$columnName} as INTEGER)";
+                    break;
+                case 'price':
+                    $columnName = "DECIMAL({$columnName})";
                     break;
                 case 'bool':
                 case 'boolean':
@@ -356,7 +479,7 @@ class DataTableBuilder implements DataTableInterface
                     break;
                 default:
                     $columnName = !is_numeric($columnName) ? "LOWER({$columnName})" : $columnName;
-                    $columnName = "CAST({$columnName} as text)";
+                    $columnName = "CAST({$columnName} as TEXT)";
                     break;
             }
         }
