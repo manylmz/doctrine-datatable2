@@ -1,0 +1,110 @@
+
+{% block content %}
+    <div class="panel panel-white">
+        <div class="panel-heading">
+            <h5 class="panel-title">
+            {{ block('title') }}
+            </div>
+        </div><!-- .panel-heading -->
+        <form action="#" method="post" class="fix-datatable-search">
+            <table id="data-table" class="table table-hover datatable-highlight">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Başlık</th>
+                        <th>Tarih</th>
+                        <th>Durum</th>
+                        <th>İşlemler</th>
+                    </tr>
+                </thead>
+            </table>
+        </form>
+    </div><!-- .panel -->
+{% endblock %}
+
+
+{% block js %}
+    <script src="{{ asset('datatables/datatables.min.js') }}"></script>
+    <script type="text/javascript">
+        $(function(){
+
+            $('#data-table').datatable_js({
+                'pageLength': 15,
+                'ajax': {'url': "{{ path('page_datatable', app.request.query.all)|raw }}"},
+                'columns': [
+                    {
+                        data: 'page_id',
+                        name: 'page_id',
+                        columnType: 'integer',
+                        columnRegex: '=',
+                        orderable: true,
+                        searchable: true,
+                        render: function (page_id) {
+                            return $(document).datatable_checkbox(page_id);
+                        }
+                    },
+                    {
+                        data: 'page_name',
+                        name: 'page_name',
+                        columnType: 'text',
+                        columnRegex: '%',
+                        searchable: true,
+                        orderable: true,
+                    },
+                    {
+                        data: 'page_createdAt',
+                        name: 'page_createdAt',
+                        columnType: 'datetime',
+                        columnRegex: '%',
+                        searchable: true,
+                        render: function (page_createdAt) {
+                            return $(document).datatable_date_parse(page_createdAt.date);
+                        }
+                    },
+                    {
+                        data: 'page_status',
+                        name: 'page_status',
+                        orderable: false,
+                        searchable: false,
+                        render: function (page_status, type, data) {
+                            return $(document).datatable_statusable(page_status, data.page_id);
+                        }
+                    },
+                    {
+                        data: 'page_id',
+                        name: 'page_id',
+                        columnType: 'integer',
+                        columnRegex: '=',
+                        orderable: false,
+                        searchable: false,
+                        render: function (page_id, type, data) {
+                            var config = [
+                                {
+                                    title: "Düzenle",
+                                    icon: "icon-pencil6",
+                                    attrs: {
+                                        a: {href: $(document).datatable_url("{{ path('page_update', {'id': ':id'}) }}", page_id)}
+                                    }
+                                },
+                                {
+                                    title: "Sil",
+                                    icon: "icon-bin",
+                                    attrs: {
+                                        a: {href: $(document).datatable_url("{{ path('page_delete', {'id': ':id'}) }}", page_id)}
+                                    }
+                                }
+                            ];
+
+                            return $(document).generate_option_buttons(config, data.page_deletedAt === null);
+                        }
+                    }
+                ],
+                "fnDrawCallback": function () {
+                    $(document).datatable_callback();
+                }
+            });
+
+            $(document).datatable_switchery("{{ path('page_direct_change') }}");
+        });
+    </script>
+{% endblock %}
